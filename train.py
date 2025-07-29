@@ -1,30 +1,4 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2023 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# See the License for the specific language governing permissions and
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2023 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
+
 import argparse
 import logging
 import math
@@ -80,7 +54,6 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 # ------------------------------------------------------------------------------x
 
-# Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.15.0.dev0")
 
 logger = get_logger(__name__)
@@ -97,46 +70,24 @@ class AdapterLayer(nn.Module):
         self.gamma = nn.Parameter(torch.zeros(1))  # 학습 가능한 스칼라 파라미터
         self.self_attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=8, batch_first=True)
 
-        # `fused_embedding`을 `y`와 같은 차원으로 변환하는 Linear Layer 정의
         self.fc1 = nn.Linear(fused_dim, embed_dim)
 
     def forward(self, y, fused_embedding):
-        ######################
-    #    print("AdapterLayer Forward Pass Called")
-    #    print("AdapterLayer - y.requires_grad:", y.requires_grad)
-    #    print("AdapterLayer - fused_embedding.requires_grad:", fused_embedding.requires_grad)
-        # 결합 전의 y 복사 (결합 전 상태 저장)
-    #    y_before = y.clone().detach()
- ###################### ######################
-        # `y`의 크기 가져오기
+
         batch_size, seq_length, embed_dim = y.size()  # [batch_size, seq_length, embed_dim]
-        # `fused_embedding`에 Linear Layer 적용하여 `y`와 같은 차원으로 변환
         fused_embedding_projected = self.fc1(fused_embedding)  # [num_fused_tokens, embed_dim]
-        # 배치 크기 확장
         fused_embedding_expanded = fused_embedding_projected.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, num_fused_tokens, embed_dim]
-        # `y`와 결합
         combined_input = torch.cat([y, fused_embedding_expanded], dim=1)  # [batch_size, seq_length + num_fused_tokens, embed_dim]
-        # Self-Attention 수행
+
         S_output, _ = self.self_attention(
             query=combined_input,
             key=combined_input,
             value=combined_input,
         )
-        # `S_output`에서 원래의 `y`에 해당하는 부분만 가져오기
-        S_output = S_output[:, :seq_length, :]  # [batch_size, seq_length, embed_dim]
-        # `y` 업데이트
-        y = y + self.beta * torch.tanh(self.gamma) * S_output
-   ###################### ######################       ###################### ######################
-            # 결합 후의 y 출력
-    #    print("y before update (mean, std):", y_before.mean().item(), y_before.std().item())
-    #    print("y after update (mean, std):", y.mean().item(), y.std().item())
 
-        # 변화 확인
-    #    if torch.allclose(y_before, y):
-    #        print("y has not changed!")
-    #    else:
-    #        print("y has changed!")
- ###################### ######################
+        S_output = S_output[:, :seq_length, :]  # [batch_size, seq_length, embed_dim]
+
+        y = y + self.beta * torch.tanh(self.gamma) * S_output
         return y
     
     
@@ -156,12 +107,6 @@ class UNetWithAdapter(ModelMixin):
             if "attn2.to_k" in name or "attn2.to_v" in name:  # Cross-attention key and value
                 param.requires_grad = True
 
-        # Confirm which parameters are trainable
-      #  print("Trainable parameters in UNet:")
-      #  for name, param in self.unet.named_parameters():
-       #     if param.requires_grad:
-       #         print(f" - {name}")
-
     def forward(self, sample, timestep, encoder_hidden_states, fused_embedding=None, **kwargs):
         # Ensure adapter gets the input
         if self.adapter_layer is not None:
@@ -180,13 +125,10 @@ class UNetWithAdapter(ModelMixin):
 
         
     def save_config(self, save_directory):
-        """
-        Save the configuration of the UNetWithAdapter model.
-        """
+
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
 
-        # UNet의 config(FrozenDict)를 dict로 변환하여 저장
         if isinstance(self.config, dict):
             config_to_save = self.config
         else:
@@ -215,7 +157,7 @@ def log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight
     validation_output_dir=os.path.join(args.output_dir,"validation")
     if not os.path.exists(validation_output_dir):
         os.makedirs(validation_output_dir)
-    # create pipeline (note: unet and vae are loaded again in float32)
+
     pipeline = DiffusionPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         text_encoder=accelerator.unwrap_model(text_encoder),
@@ -268,49 +210,39 @@ class CrossAttentionFusion(nn.Module):
     def __init__(self, embed_dim=1024, num_heads=8):
         super(CrossAttentionFusion, self).__init__()
         
-        # 멀티헤드 크로스 어텐션 레이어
         self.cross_attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
-        
-        # Query의 크기를 조정하기 위한 Linear Layer
+
         self.query_projection = nn.Linear(embed_dim, embed_dim)
 
-        # Key/Value 크기를 조정하기 위한 Linear Layer
         self.key_value_projection = nn.Linear(embed_dim, embed_dim)
 
-        # 최종 출력 크기를 [1, 1024] -> [2, 1024]로 변환하기 위한 Linear Layer
-        self.linear_projection = nn.Linear(embed_dim, 2 * embed_dim)  # [1, 1024] -> [1, 2048]
+        self.linear_projection = nn.Linear(embed_dim, 2 * embed_dim)  
 
     def forward(self, arcface_embedding, initialize_embeds):
-        # ArcFace와 Text 임베딩이 동일한 디바이스에 있는지 확인
         device = arcface_embedding.device
         initialize_embeds = initialize_embeds.to(device)
 
-        # Query 크기를 확장하여 Cross-Attention 수행
-        arcface_embedding = arcface_embedding.unsqueeze(0)  # [1, 1024] -> [1, 1, 1024]
-        query = self.query_projection(arcface_embedding)    # [1, 1, 1024]
+        arcface_embedding = arcface_embedding.unsqueeze(0) 
+        query = self.query_projection(arcface_embedding)    
 
-        # Key/Value에 대해 프로젝션 수행
-        key_value = self.key_value_projection(initialize_embeds)  # [N, 1024] -> [N, 1024]
+        key_value = self.key_value_projection(initialize_embeds)  
 
-        # Key와 Value를 Cross-Attention으로 학습
         attention_output, _ = self.cross_attention(
-            query,                      # Query: [1, 1, 1024]
-            key_value.unsqueeze(0),     # Key: [1, N, 1024]
-            key_value.unsqueeze(0)      # Value: [1, N, 1024]
-        )  # 결과: attention_output -> [1, 1, 1024]
+            query,                    
+            key_value.unsqueeze(0),    
+            key_value.unsqueeze(0)  
+        ) 
 
-        # Linear Layer를 통해 [1, 1024] -> [1, 2048]로 변환
-        linear_output = self.linear_projection(attention_output.squeeze(0))  # [1, 2048]
+        linear_output = self.linear_projection(attention_output.squeeze(0))  
 
-        # [1, 2048]을 [2, 1024]로 변환
-        fused_embedding = linear_output.view(2, -1)  # [2, 1024]
+
+        fused_embedding = linear_output.view(2, -1)
 
         return fused_embedding
 
 def train():
-    ##################
-    set_gpu(2)
-    #################
+
+    set_gpu(0)
 
     args = parse_args()
 
@@ -337,7 +269,6 @@ def train():
 
     print("ArcFace embedding extracted:", arcface_embedding.shape)
 
-    # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -351,12 +282,10 @@ def train():
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
-    # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
         setup_seed(args.seed)
 
-    # Handle the repository creation
     if accelerator.is_main_process:
         if args.push_to_hub:
             if args.hub_model_id is None:
@@ -386,19 +315,13 @@ def train():
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
     )
     vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
-    ###################################################################
-    # 모델 초기화 예시 (훈련 코드에 삽입 가능)
-    # unet 및 adapter 생성
+
     unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="unet",revision=args.revision)
     adapter = AdapterLayer(embed_dim=1024, fused_dim=2048, beta=0.4) # 적절한 embed_dim으로 AdapterLayer 초기화
 
     # UNet에 AdapterLayer를 통합한 UNetWithAdapter 생성
     unet_with_adapter = UNetWithAdapter(unet, adapter)
-      # 전체 모델을 동결하여 Adapter와 cross-attention key/value만 학습 가능하게 함
 
-    # 이후 훈련 루프에서는 unet_with_adapter를 사용하여 필요한 E_r 값을 전달하며 훈련을 진행하면 됩니다.
-    ####################################################################
-    # Add the placeholder token in tokenizer
     placeholder_tokens = []
     placeholder_token_ids = []
     for id in range(args.n_persudo_tokens):
@@ -412,7 +335,6 @@ def train():
         placeholder_tokens.append(new_token)
         placeholder_token_ids.append(tokenizer.convert_tokens_to_ids(new_token))
 
-    # Resize the token embeddings as we are adding new special tokens to the tokenizer
     text_encoder.resize_token_embeddings(len(tokenizer))
 
     if args.initialize_tokens is not None:
@@ -424,47 +346,37 @@ def train():
     text_encoder.get_input_embeddings().weight.data[placeholder_token_ids]=initialize_embeds
     initialize_embeds=initialize_embeds.clone().detach().to(accelerator.device)
 
-#########################################
 
-    # 텍스트 임베딩 크기 확인
-    print("Token Embeddings Shape:", initialize_embeds.shape)
-
-    # ArcFace 임베딩을 1024 차원으로 확장
     arcface_dim_expander = torch.nn.Linear(512, 1024).to(arcface_embedding.device)
     arcface_embedding_expand = arcface_dim_expander(arcface_embedding)  # 레이어 호출
 
-    # ArcFace 임베딩 크기를 [2, 1024]로 확장
+
     arcface_embedding_resized = arcface_embedding_expand.expand(2, -1)
     
-    # 확장된 ArcFace 및 Placeholder 임베딩 크기 확인
-    print(f"Resized ArcFace Embedding Shape: {arcface_embedding_resized.shape}")  # 예상: [2, 1024]
+
+    print(f"Resized ArcFace Embedding Shape: {arcface_embedding_resized.shape}")  
     
-    # initialize_embeds를 arcface_embedding과 동일한 디바이스로 옮김
     initialize_embeds = initialize_embeds.to(arcface_embedding_resized.device)
     
-    # CrossAttentionFusion 모듈 생성 및 적용
     cross_attention_fusion = CrossAttentionFusion(embed_dim=1024, num_heads=8).to(accelerator.device)
     arcface_embedding_resized = arcface_embedding_resized.to(accelerator.device)
     initialize_embeds = initialize_embeds.to(accelerator.device)
     fused_embedding = cross_attention_fusion(arcface_embedding_resized, initialize_embeds)
 
-    print("Fused Embedding Shape:", fused_embedding.shape)  # 예상 출력: [2, 1024]
+    print("Fused Embedding Shape:", fused_embedding.shape)  
 
-#########################################
 
-    # Freeze vae and unet
+
     vae.requires_grad_(False)
-   # unet_with_adapter.requires_grad_(True)
+
     unet_with_adapter.adapter_layer.requires_grad_(True)
-    # Freeze all parameters except for the token embeddings in text encoder
+
     text_encoder.text_model.encoder.requires_grad_(False)
     text_encoder.text_model.final_layer_norm.requires_grad_(False)
     text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
 
 
     if args.gradient_checkpointing:
-        # Keep unet in train mode if we are using gradient checkpointing to save memory.
-        # The dropout cannot be != 0 so it doesn't matter if we are in eval or train mode.
         unet_with_adapter.train()
         text_encoder.gradient_checkpointing_enable()
         unet_with_adapter.enable_gradient_checkpointing()
@@ -524,8 +436,7 @@ def train():
             stacklevel=2,
         )
         args.validation_steps = args.validation_epochs * len(train_dataset)
-        
-    # Scheduler and math around the number of training steps.
+
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
@@ -538,8 +449,7 @@ def train():
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
         num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
     )
-    
-    # Prepare everything with our `accelerator`.
+
     text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         text_encoder, optimizer, train_dataloader, lr_scheduler
     )
@@ -553,15 +463,14 @@ def train():
     unet_with_adapter.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
 
-    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
+
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    # Afterwards we recalculate our number of training epochs
+
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
-    # We need to initialize the trackers we use, and also store our configuration.
-    # The trackers initializes automatically on the main process.
+
     if accelerator.is_main_process:
         accelerator.init_trackers("textual_inversion", config=vars(args))
 
@@ -578,7 +487,7 @@ def train():
 
     global_step = 0
     first_epoch = 0
-    # Potentially load in the weights and states from a previous save
+
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -635,7 +544,7 @@ def train():
                     sample=noisy_latents,
                     timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
-                    fused_embedding=fused_embedding  # 전달
+                    fused_embedding=fused_embedding
                 ).sample
 
                 if noise_scheduler.config.prediction_type == "epsilon":
@@ -645,12 +554,9 @@ def train():
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-                
-#######################################                ######################################
                 token_embeds = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight
                 # 공분산 행렬 계산 (PyTorch로 수행)
                 covariance_matrix = torch.cov(initialize_embeds.T)
-              #  print("Covariance Matrix contains nan:", torch.isnan(covariance_matrix).any()) # Cov matrix에 nan 이나 inf인지 검사하는 코드
 
                 # 공분산 행렬 정규화
                 zeta = 2e-5
@@ -659,10 +565,8 @@ def train():
                 # 공분산 행렬의 역행렬 계산
                 inv_covariance_matrix = torch.linalg.pinv(covariance_matrix)
 
-                # Mahalanobis Distance 계산
                 func = token_embeds[placeholder_token_ids] - initialize_embeds  # [2, 1024]
                 distance_squared_raw = func @ inv_covariance_matrix @ func.T
-        #        print("Raw Distance Squared:", distance_squared_raw)
 
                 # 거리 계산 (수치적 안정성 추가)
                 distance_squared = torch.clamp(torch.diagonal(distance_squared_raw), min=1e-8)  # 대각선만 사용
@@ -670,29 +574,11 @@ def train():
 
                 # Regularization Loss 계산
                 reg_loss = mahalanobis_distance.mean() * args.reg_weight
-      #          print("reg_loss:", reg_loss.item())
-      #          print("func Min/Max:", func.min(), func.max())
-      #          print("Mahalanobis Distance:", mahalanobis_distance)
-#######################################                ######################################
-               # reg_loss=F.pairwise_distance(token_embeds[placeholder_token_ids],initialize_embeds,p=2).mean()*args.reg_weight
+
                 loss=F.mse_loss(model_pred,target,reduction='mean')+reg_loss
 
                 accelerator.backward(loss, retain_graph=True)
 
-             # UNetWithAdapter 내 모든 파라미터 학습 가능 상태 확인    
-            #    for name, param in unet_with_adapter.adapter_layer.named_parameters():
-             #       print(f"{name}: requires_grad={param.requires_grad}")      
-                # Adapter 파라미터의 그래디언트 확인
-            #    for name, param in unet_with_adapter.adapter_layer.named_parameters():
-             #       print(f"{name}: grad_norm={param.grad.norm() if param.grad is not None else 'None'}")
-
-            #    for name, param in unet_with_adapter.unet.named_parameters():
-            #        print(f"{name}: requires_grad={param.requires_grad}")
-
-                    
-               # for name, _ in unet_with_adapter.unet.named_parameters():
-              #          print(name)
-    
 
                 optimizer.step()
                 lr_scheduler.step()
